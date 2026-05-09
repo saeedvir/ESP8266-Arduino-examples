@@ -1,3 +1,34 @@
+//Features Included:
+//✅ Robust Error Handling
+//Wi-Fi reconnection
+//Token expiration handling
+//HTTP error codes properly handled
+//Fallback JSON parsing if ArduinoJson fails
+
+//✅ Non-blocking Operation
+//Uses millis() instead of delay()
+//Can add other tasks in the loop
+
+//✅ Session Management
+//Stores and reuses bearer token
+//Auto re-authenticates when token expires
+//Configurable token lifetime
+
+//✅ Detailed Serial Output
+
+
+//Required:
+//Wi-Fi credentials: Replace YOUR_SSID and YOUR_PASSWORD
+//API URL: Replace http://web.test/api with your actual server
+//Login credentials: Replace email, password, and device name
+//Sensor token: Replace SENSOR_TOKEN with your actual sensor token
+//Update interval: Adjust UPDATE_INTERVAL (currently 30 seconds)
+//Sensor reading: Replace readSensorValue() with your actual sensor code
+
+
+// Add deep sleep for battery operation
+// ESP.deepSleep(UPDATE_INTERVAL * 1000);  // microseconds
+
 #include <ESP8266WiFi.h>
 #include <ESP8266HTTPClient.h>
 #include <ArduinoJson.h>
@@ -11,7 +42,7 @@ const char* WIFI_SSID = "YOUR_SSID";
 const char* WIFI_PASSWORD = "YOUR_PASSWORD";
 
 // API Configuration
-const String API_BASE_URL = "http://agri.test/api";  // Change to IP if DNS fails
+const String API_BASE_URL = "http://web.test/api";  // Change to IP if DNS fails
 const String DEVICE_NAME = "MyTerminal";
 
 // Login credentials
