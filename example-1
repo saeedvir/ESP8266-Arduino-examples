@@ -1,0 +1,316 @@
+#include <ESP8266WiFi.h>
+#include <ESP8266HTTPClient.h>
+#include <ArduinoJson.h>
+
+// ============================================
+// CONFIGURATION - MODIFY THESE VALUES
+// ============================================
+
+// Wi-Fi credentials
+const char* WIFI_SSID = "YOUR_SSID";
+const char* WIFI_PASSWORD = "YOUR_PASSWORD";
+
+// API Configuration
+const String API_BASE_URL = "http://agri.test/api";  // Change to IP if DNS fails
+const String DEVICE_NAME = "MyTerminal";
+
+// Login credentials
+const String USER_EMAIL = "your-email@example.com";
+const String USER_PASSWORD = "your-password";
+
+// Sensor token (from your Agri.Test system)
+const String SENSOR_TOKEN = "SENSOR_TOKEN";
+
+// Update interval in milliseconds (e.g., 60000 = 1 minute)
+const unsigned long UPDATE_INTERVAL = 30000;  // 30 seconds
+
+// ============================================
+// GLOBAL VARIABLES
+// ============================================
+
+// Timing variables
+unsigned long lastUpdateTime = 0;
+
+// Authentication
+String bearerToken = "";
+unsigned long tokenExpiry = 0;
+const unsigned long TOKEN_LIFETIME = 3600000;  // 1 hour in ms (adjust based on your API)
+
+// Connection status
+bool isAuthenticated = false;
+
+// ============================================
+// SETUP
+// ============================================
+
+void setup() {
+  Serial.begin(115200);
+  Serial.println("\n\n========================================");
+  Serial.println("ESP8266 Agri.Test Sensor Monitor");
+  Serial.println("========================================\n");
+  
+  // Connect to Wi-Fi
+  connectToWiFi();
+  
+  // Initial authentication
+  Serial.println("Performing initial authentication...");
+  authenticate();
+}
+
+// ============================================
+// MAIN LOOP
+// ============================================
+
+void loop() {
+  // Check Wi-Fi connection
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("Wi-Fi disconnected! Reconnecting...");
+    connectToWiFi();
+  }
+  
+  // Check if token needs refresh
+  if (!isAuthenticated || (millis() > tokenExpiry)) {
+    Serial.println("Token expired or missing. Re-authenticating...");
+    authenticate();
+  }
+  
+  // Non-blocking update check
+  if (millis() - lastUpdateTime >= UPDATE_INTERVAL) {
+    if (isAuthenticated) {
+      // Read sensor value (replace with your actual sensor reading)
+      float sensorValue = readSensorValue();
+      
+      // Send update to server
+      sendSensorUpdate(sensorValue);
+    }
+    
+    lastUpdateTime = millis();
+  }
+  
+  // Optional: Blink LED to show system is alive
+  // digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
+  // delay(100);
+  
+  // Yield to prevent watchdog timer issues
+  yield();
+}
+
+// ============================================
+// WI-FI CONNECTION
+// ============================================
+
+void connectToWiFi() {
+  Serial.print("Connecting to Wi-Fi: ");
+  Serial.print(WIFI_SSID);
+  
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+    delay(500);
+    Serial.print(".");
+    attempts++;
+  }
+  
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\n✓ Connected successfully!");
+    Serial.print("  IP address: ");
+    Serial.println(WiFi.localIP());
+    Serial.print("  Signal strength: ");
+    Serial.print(WiFi.RSSI());
+    Serial.println(" dBm\n");
+  } else {
+    Serial.println("\n✗ Failed to connect to Wi-Fi!");
+    Serial.println("  Restarting in 5 seconds...");
+    delay(5000);
+    ESP.restart();
+  }
+}
+
+// ============================================
+// AUTHENTICATION
+// ============================================
+
+void authenticate() {
+  HTTPClient http;
+  String url = API_BASE_URL + "/login";
+  
+  Serial.println("→ POST " + url);
+  
+  if (!http.begin(url)) {
+    Serial.println("✗ Failed to initialize HTTP client");
+    isAuthenticated = false;
+    return;
+  }
+  
+  // Set headers
+  http.addHeader("Content-Type", "application/json");
+  
+  // Build JSON body
+  StaticJsonDocument<256> doc;
+  doc["email"] = USER_EMAIL;
+  doc["password"] = USER_PASSWORD;
+  doc["device_name"] = DEVICE_NAME;
+  
+  String jsonBody;
+  serializeJson(doc, jsonBody);
+  
+  Serial.println("  Body: " + jsonBody);
+  
+  // Send POST request
+  int httpCode = http.POST(jsonBody);
+  
+  if (httpCode == 200) {
+    String response = http.getString();
+    Serial.println("✓ Login successful (HTTP " + String(httpCode) + ")");
+    Serial.println("  Response: " + response);
+    
+    // Parse token
+    bearerToken = parseToken(response);
+    
+    if (bearerToken.length() > 0) {
+      isAuthenticated = true;
+      tokenExpiry = millis() + TOKEN_LIFETIME;
+      Serial.println("  Token: " + bearerToken.substring(0, 20) + "...");
+      Serial.println("  Token valid for: " + String(TOKEN_LIFETIME/1000) + " seconds\n");
+    } else {
+      Serial.println("✗ Failed to extract token from response");
+      isAuthenticated = false;
+    }
+  } else {
+    Serial.println("✗ Login failed (HTTP " + String(httpCode) + ")");
+    String response = http.getString();
+    Serial.println("  Response: " + response);
+    isAuthenticated = false;
+  }
+  
+  http.end();
+}
+
+String parseToken(const String& jsonResponse) {
+  // Method 1: Using ArduinoJson (preferred)
+  DynamicJsonDocument doc(1024);
+  DeserializationError error = deserializeJson(doc, jsonResponse);
+  
+  if (!error) {
+    // Try common token field names
+    if (doc.containsKey("token")) {
+      return doc["token"].as<String>();
+    } else if (doc.containsKey("access_token")) {
+      return doc["access_token"].as<String>();
+    } else if (doc.containsKey("data") && doc["data"].containsKey("token")) {
+      return doc["data"]["token"].as<String>();
+    }
+  }
+  
+  // Method 2: Fallback manual parsing
+  Serial.println("  ArduinoJson failed, trying manual parse...");
+  
+  String token = "";
+  const char* tokenKey = "\"token\":\"";
+  int start = jsonResponse.indexOf(tokenKey);
+  
+  if (start == -1) {
+    tokenKey = "\"access_token\":\"";
+    start = jsonResponse.indexOf(tokenKey);
+  }
+  
+  if (start != -1) {
+    start += strlen(tokenKey);
+    int end = jsonResponse.indexOf("\"", start);
+    if (end != -1) {
+      token = jsonResponse.substring(start, end);
+    }
+  }
+  
+  return token;
+}
+
+// ============================================
+// SEND SENSOR UPDATE
+// ============================================
+
+void sendSensorUpdate(float value) {
+  HTTPClient http;
+  String url = API_BASE_URL + "/sensors/" + SENSOR_TOKEN + "/value";
+  
+  Serial.println("→ PUT " + url);
+  
+  if (!http.begin(url)) {
+    Serial.println("✗ Failed to initialize HTTP client");
+    return;
+  }
+  
+  // Set headers
+  http.addHeader("Accept", "application/json");
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("Authorization", "Bearer " + bearerToken);
+  
+  // Build JSON body
+  StaticJsonDocument<64> doc;
+  doc["value"] = value;
+  
+  String jsonBody;
+  serializeJson(doc, jsonBody);
+  
+  Serial.println("  Value: " + String(value));
+  Serial.println("  Body: " + jsonBody);
+  
+  // Send PUT request
+  int httpCode = http.sendRequest("PUT", (uint8_t*)jsonBody.c_str(), jsonBody.length());
+  
+  if (httpCode == 200 || httpCode == 201 || httpCode == 204) {
+    String response = http.getString();
+    Serial.println("✓ Update successful (HTTP " + String(httpCode) + ")");
+    if (response.length() > 0) {
+      Serial.println("  Response: " + response);
+    }
+  } else if (httpCode == 401) {
+    Serial.println("✗ Unauthorized (HTTP 401) - Token expired or invalid");
+    isAuthenticated = false;  // Force re-authentication
+  } else if (httpCode == 404) {
+    Serial.println("✗ Sensor not found (HTTP 404) - Check SENSOR_TOKEN");
+  } else if (httpCode == 422) {
+    String response = http.getString();
+    Serial.println("✗ Validation error (HTTP 422)");
+    Serial.println("  Response: " + response);
+  } else {
+    String response = http.getString();
+    Serial.println("✗ Update failed (HTTP " + String(httpCode) + ")");
+    if (response.length() > 0) {
+      Serial.println("  Response: " + response);
+    }
+  }
+  
+  http.end();
+  Serial.println();
+}
+
+// ============================================
+// SENSOR READING (SIMULATED - REPLACE WITH ACTUAL SENSOR)
+// ============================================
+
+float readSensorValue() {
+  // Replace this with your actual sensor reading code
+  // Examples:
+  //
+  // DHT22 Temperature:
+  // #include <DHT.h>
+  // DHT dht(D4, DHT22);
+  // float temp = dht.readTemperature();
+  // return isnan(temp) ? 0.0 : temp;
+  //
+  // Soil Moisture (analog):
+  // int moisture = analogRead(A0);
+  // return map(moisture, 0, 1023, 0, 100);
+  //
+  // BMP280 Pressure:
+  // #include <Adafruit_BMP280.h>
+  // return bmp.readPressure() / 100.0F;
+  
+  // Simulated random value for testing
+  float simulatedValue = random(200, 350) / 10.0;  // 20.0 to 35.0
+  Serial.println("📊 Sensor reading (simulated): " + String(simulatedValue));
+  return simulatedValue;
+}
